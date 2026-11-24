@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PixelSynth - Paint Your Music</title>
+<style>
+/* PixelSynth - paint pixels, hear music. A grid you draw on becomes a
+   looping sequencer. Single file, Web Audio, no assets. */
+:root{--bg:#0a0f1e;--panel:#131b30;--line:#243257;--accent:#38bdf8;--accent2:#fb923c;
+--text:#eaf4ff;--muted:#8ba3c8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI",system-ui,sans-serif;background:radial-gradient(1000px 700px at 60% -10%,#0f2c47,var(--bg));color:var(--text);min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px 48px}
+h1{font-size:clamp(1.5rem,4vw,2rem)} h1 span{color:var(--accent)}
+.sub{color:var(--muted);font-size:.85rem;margin:4px 0 16px;text-align:center}
+#wrap{width:min(720px,96vw)}
+#grid{display:grid;grid-template-columns:repeat(16,1fr);gap:3px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px;touch-action:none}
+.cell{aspect-ratio:1;background:#0e1526;border-radius:4px;cursor:pointer;transition:background .08s,transform .08s}
+.cell.on{transform:scale(1.06)}
+.cell.playhead{outline:2px solid #ffffff55;outline-offset:-2px}
+.controls{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin:16px 0;align-items:center}
+.btn{background:linear-gradient(135deg,var(--accent),#2563eb);border:none;color:#031527;font-weight:700;padding:11px 22px;border-radius:12px;cursor:pointer;font-size:.95rem;transition:transform .15s}
+.btn:hover{transform:translateY(-2px)}
+.btn.ghost{background:transparent;border:1px solid var(--accent);color:var(--accent)}
+.btn.warn{background:linear-gradient(135deg,var(--accent2),#ea580c);color:#2a1002}
+label{font-size:.75rem;color:var(--muted);display:flex;align-items:center;gap:8px}
+input[type=range]{accent-color:var(--accent)}
+select{background:var(--panel);border:1px solid var(--line);color:var(--text);padding:10px 12px;border-radius:10px}
+.hint{color:var(--muted);font-size:.78rem;text-align:center;font-style:italic}
+</style>
+</head>
+<body>
+<h1 id="brand">Pixel<span>Synth</span></h1>
+<div class="sub" id="tag"></div>
+<div id="wrap"><div id="grid"></div></div>
+<div class="controls">
+  <button class="btn" id="playBtn">Play</button>
+  <button class="btn warn" id="randBtn">Inspire me</button>
+  <button class="btn ghost" id="clearBtn">Clear</button>
+  <label>Tempo <input type="range" id="tempo" min="60" max="200" value="120"> <b id="bpm">120</b></label>
+  <select id="scale">
+    <option value="major">Major</option>
+    <option value="minor">Minor</option>
+    <option value="penta">Pentatonic</option>
+    <option value="blues">Blues</option>
+  </select>
+</div>
+<div class="hint">Draw on the grid. Rows are notes (high to low), columns are beats. Press Play.</div>
+<script>
+/* ============ CONFIG (rebrand here) ============ */
+const CONFIG = { brandName:"PixelSynth", tagline:"A canvas you can hear. Paint a beat, loop it, vibe.",
+  cols:16, rows:10, root:220 /* A3 */ };
+/* ============ Grid state ============ */
+const $ = id => document.getElementById(id);
+let cells = Array.from({length:CONFIG.rows},()=>Array(CONFIG.cols).fill(false));
+let painting=false, paintVal=true, playCol=-1, playing=false, loop=null, ac=null;
+/* ============ Scales ============ */
+const SCALES = { major:[0,2,4,5,7,9,11,12,14,16], minor:[0,2,3,5,7,8,10,12,14,15],
+  penta:[0,2,4,7,9,12,14,16,19,21], blues:[0,3,5,6,7,10,12,15,17,18] };
+function noteFreq(row){
+  const steps = SCALES[$("scale").value];
+  return CONFIG.root * Math.pow(2, steps[row % steps.length]/12);
+}
+/* ============ Render ============ */
+const HUES=[190,200,210,170,160,280,300,320,30,15];
+function render(){
+  const g=$("grid"); g.innerHTML="";
+  for(let r=0;r<CONFIG.rows;r++) for(let c=0;c<CONFIG.cols;c++){
+    const d=document.createElement("div");
+    d.className="cell"+(cells[r][c]?" on":"")+(c===playCol?" playhead":"");
+    if(cells[r][c]) d.style.background=`hsl(${HUES[r]},85%,58%)`;
+    d.dataset.r=r; d.dataset.c=c;
+    g.appendChild(d);
+  }
+}
+/* pointer painting (works on touch + mouse) */
+const grid=$("grid");
+function cellFromEvent(e){
+  const t=document.elementFromPoint(e.clientX??e.touches?.[0]?.clientX, e.clientY??e.touches?.[0]?.clientY);
+  return t && t.classList.contains("cell") ? t : null;
+}
+grid.addEventListener("pointerdown",e=>{
+  const t=cellFromEvent(e); if(!t) return;
+  painting=true;
+  const r=+t.dataset.r, c=+t.dataset.c;
+  paintVal=!cells[r][c]; cells[r][c]=paintVal; render();
+});
+grid.addEventListener("pointermove",e=>{
+  if(!painting) return;
+  const t=cellFromEvent(e); if(!t) return;
+  const r=+t.dataset.r, c=+t.dataset.c;
+  if(cells[r][c]!==paintVal){ cells[r][c]=paintVal; render(); }
+});
+window.addEventListener("pointerup",()=>painting=false);
+/* ============ Audio ============ */
+function blip(freq, when){
+  const o=ac.createOscillator(), g=ac.createGain(), f=ac.createBiquadFilter();
+  o.type="triangle"; o.frequency.value=freq;
+  f.type="lowpass"; f.frequency.value=2400;
+  o.connect(f); f.connect(g); g.connect(ac.destination);
+  g.gain.setValueAtTime(0,when);
+  g.gain.linearRampToValueAtTime(.22,when+.015);
+  g.gain.exponentialRampToValueAtTime(.001,when+.34);
+  o.start(when); o.stop(when+.4);
+}
+$("playBtn").onclick=()=>{
+  if(playing){ stopLoop(); return; }
+  ac = ac || new (window.AudioContext||window.webkitAudioContext)();
+  playing=true; $("playBtn").textContent="Stop";
+  let col=0;
+  const step=()=>{
+    playCol=col; render();
+    const now=ac.currentTime;
+    for(let r=0;r<CONFIG.rows;r++) if(cells[r][col]) blip(noteFreq(r), now+.02);
+    col=(col+1)%CONFIG.cols;
+    loop=setTimeout(step, 60000/(+$("tempo").value)/2); // 8th notes
+  };
+  step();
+};
+function stopLoop(){ playing=false; playCol=-1; clearTimeout(loop); $("playBtn").textContent="Play"; render(); }
+$("clearBtn").onclick=()=>{ cells=cells.map(r=>r.map(()=>false)); render(); };
+$("randBtn").onclick=()=>{
+  // A tiny generative composer: kick-like low notes on beats, sparkle above.
+  cells=cells.map(r=>r.map(()=>false));
+  for(let c=0;c<CONFIG.cols;c++){
+    if(c%4===0) cells[CONFIG.rows-1][c]=true;                    // low pulse
+    if(Math.random()<.28) cells[Math.floor(Math.random()*7)][c]=true;
+    if(Math.random()<.1) cells[Math.floor(Math.random()*4)][c]=true;
+  }
+  render();
+};
+$("tempo").oninput=e=>$("bpm").textContent=e.target.value;
+$("tag").textContent=CONFIG.tagline;
+document.title=CONFIG.brandName+" - Paint Your Music";
+render();
+</script>
+</body>
+</html>
